@@ -42,6 +42,7 @@ ES_HOST = os.getenv("ES_HOST", "localhost")
 
 # Snowflake
 DATABASE_NAME = os.getenv("SNOWFLAKE_DATABASE_KEY", "YourSnowflakeDbName")
+WHERE_CLAUSE = "WHERE t.TABLE_SCHEMA != 'INFORMATION_SCHEMA'"
 
 
 def connection_string(database):
@@ -76,6 +77,7 @@ def create_sample_snowflake_job():
     job_config = ConfigFactory.from_dict({
         f'extractor.snowflake.extractor.sqlalchemy.{SQLAlchemyExtractor.CONN_STRING}': connection_string(DATABASE_NAME),
         f'extractor.snowflake.{SnowflakeMetadataExtractor.SNOWFLAKE_DATABASE_KEY}': DATABASE_NAME,
+        f'extractor.snowflake_table_last_updated.{SnowflakeMetadataExtractor.WHERE_CLAUSE_SUFFIX_KEY}': WHERE_CLAUSE,
 
         f'loader.filesystem_csv_neo4j.{FsNeo4jCSVLoader.NODE_DIR_PATH}': node_files_folder,
         f'loader.filesystem_csv_neo4j.{FsNeo4jCSVLoader.RELATION_DIR_PATH}': relationship_files_folder,
