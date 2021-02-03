@@ -2,12 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-This is a example script which demo how to load data into neo4j without using Airflow DAG.
+Example script which explains how to load metadata for tables/views from Snowflake into neo4j without using Airflow.
+It extracts the information from the information_schema.tables view available in each database.
+
+1. SnowflakeMetadataExtractor extracts table metadata to memory.
+2. FsNeo4jCSVLoader dumps extract from memory to file.
+3. neo4j_csv_publisher inserts from files to neo4j.
 """
 
 import logging
 import os
-import sys
 import uuid
 
 from elasticsearch.client import Elasticsearch
@@ -26,53 +30,40 @@ from databuilder.publisher.neo4j_csv_publisher import Neo4jCsvPublisher
 from databuilder.task.task import DefaultTask
 from databuilder.transformer.base_transformer import NoopTransformer
 
-LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.INFO)
-# Disable snowflake logging
-logging.getLogger("snowflake.connector.network").disabled = True
+# Configuration Start
 
-SNOWFLAKE_DATABASE_KEY = 'YourSnowflakeDbName'
-
-# set env NEO4J_HOST to override localhost
+# Neo4j
 NEO4J_ENDPOINT = f'bolt://{os.getenv("NEO4J_HOST", "localhost")}:7687'
-neo4j_endpoint = NEO4J_ENDPOINT
+NEO4J_USER = 'neo4j'
+NEO4j_PASSWORD = 'test'
 
-neo4j_user = 'neo4j'
-neo4j_password = 'test'
+# Elasticsearch
+ES_HOST = os.getenv("ES_HOST", "localhost")
 
-IGNORED_SCHEMAS = ['\'DVCORE\'', '\'INFORMATION_SCHEMA\'', '\'STAGE_ORACLE\'']
-
-es_host = None
-neo_host = None
-if len(sys.argv) > 1:
-    es_host = sys.argv[1]
-if len(sys.argv) > 2:
-    neo_host = sys.argv[2]
-
-es = Elasticsearch([
-    {'host': es_host if es_host else 'localhost'},
-])
+# Snowflake
+DATABASE_NAME = os.getenv("SNOWFLAKE_DATABASE_KEY", "YourSnowflakeDbName")
 
 
-# todo: connection string needs to change
-def connection_string():
+def connection_string(database):
     # Refer this doc: https://docs.snowflake.com/en/user-guide/sqlalchemy.html#connection-parameters
     # for supported connection parameters and configurations
-    user = 'username'
-    password = 'password'
-    account = 'YourSnowflakeAccountHere'
-    # specify a warehouse to connect to.
-    warehouse = 'yourwarehouse'
-    return f'snowflake://{user}:{password}@{account}/{SNOWFLAKE_DATABASE_KEY}?warehouse={warehouse}'
+    # supply a snowflake uri via .env to avoid leaking your credentials
+    user = 'SNOWFLAKE_USERNAME'
+    password = 'SNOWFLAKE_PASSWORD'
+    account = 'SNOWFLAKE_ACCOUNT'
+    role = 'SNOWFLAKE_ROLE'
+    warehouse = 'SNOWFLAKE_WAREHOUSE'
+
+    snowflake_uri = os.getenv("SNOWFLAKE_URI", None)
+
+    return snowflake_uri if snowflake_uri else \
+        f'snowflake://{user}:{password}@{account}/{database}?warehouse={warehouse}&role={role}'
+
+
+### Configuration end
 
 
 def create_sample_snowflake_job():
-    where_clause = f"WHERE c.TABLE_SCHEMA not in ({','.join(IGNORED_SCHEMAS)}) \
-            AND c.TABLE_SCHEMA not like 'STAGE_%' \
-            AND c.TABLE_SCHEMA not like 'HIST_%' \
-            AND c.TABLE_SCHEMA not like 'SNAP_%' \
-            AND lower(c.COLUMN_NAME) not like 'dw_%';"
-
     tmp_folder = '/var/tmp/amundsen/tables'
     node_files_folder = f'{tmp_folder}/nodes'
     relationship_files_folder = f'{tmp_folder}/relationships'
@@ -80,35 +71,38 @@ def create_sample_snowflake_job():
     sql_extractor = SnowflakeMetadataExtractor()
     csv_loader = FsNeo4jCSVLoader()
 
-    task = DefaultTask(extractor=sql_extractor,
-                       loader=csv_loader)
+    task = DefaultTask(extractor=sql_extractor, loader=csv_loader)
 
     job_config = ConfigFactory.from_dict({
-        f'extractor.snowflake.extractor.sqlalchemy.{SQLAlchemyExtractor.CONN_STRING}': connection_string(),
-        f'extractor.snowflake.{SnowflakeMetadataExtractor.SNOWFLAKE_DATABASE_KEY}': SNOWFLAKE_DATABASE_KEY,
-        f'extractor.snowflake.{SnowflakeMetadataExtractor.WHERE_CLAUSE_SUFFIX_KEY}': where_clause,
+        f'extractor.snowflake.extractor.sqlalchemy.{SQLAlchemyExtractor.CONN_STRING}': connection_string(DATABASE_NAME),
+        f'extractor.snowflake.{SnowflakeMetadataExtractor.SNOWFLAKE_DATABASE_KEY}': DATABASE_NAME,
+
         f'loader.filesystem_csv_neo4j.{FsNeo4jCSVLoader.NODE_DIR_PATH}': node_files_folder,
         f'loader.filesystem_csv_neo4j.{FsNeo4jCSVLoader.RELATION_DIR_PATH}': relationship_files_folder,
         f'loader.filesystem_csv_neo4j.{FsNeo4jCSVLoader.SHOULD_DELETE_CREATED_DIR}': True,
         f'loader.filesystem_csv_neo4j.{FsNeo4jCSVLoader.FORCE_CREATE_DIR}': True,
+
         f'publisher.neo4j.{neo4j_csv_publisher.NODE_FILES_DIR}': node_files_folder,
         f'publisher.neo4j.{neo4j_csv_publisher.RELATION_FILES_DIR}': relationship_files_folder,
-        f'publisher.neo4j.{neo4j_csv_publisher.NEO4J_END_POINT_KEY}': neo4j_endpoint,
-        f'publisher.neo4j.{neo4j_csv_publisher.NEO4J_USER}': neo4j_user,
-        f'publisher.neo4j.{neo4j_csv_publisher.NEO4J_PASSWORD}': neo4j_password,
+        f'publisher.neo4j.{neo4j_csv_publisher.NEO4J_END_POINT_KEY}': NEO4J_ENDPOINT,
+        f'publisher.neo4j.{neo4j_csv_publisher.NEO4J_USER}': NEO4J_USER,
+        f'publisher.neo4j.{neo4j_csv_publisher.NEO4J_PASSWORD}': NEO4j_PASSWORD,
         f'publisher.neo4j.{neo4j_csv_publisher.JOB_PUBLISH_TAG}': 'unique_tag'
     })
-    job = DefaultJob(conf=job_config,
-                     task=task,
-                     publisher=Neo4jCsvPublisher())
-    return job
+    return DefaultJob(
+        conf=job_config,
+        task=task,
+        publisher=Neo4jCsvPublisher()
+    )
 
 
-def create_es_publisher_sample_job(elasticsearch_index_alias='table_search_index',
-                                   elasticsearch_doc_type_key='table',
-                                   model_name='databuilder.models.table_elasticsearch_document.TableESDocument',
-                                   cypher_query=None,
-                                   elasticsearch_mapping=None):
+def create_es_publisher_sample_job(
+    elasticsearch_index_alias='table_search_index',
+    elasticsearch_doc_type_key='table',
+    model_name='databuilder.models.table_elasticsearch_document.TableESDocument',
+    cypher_query=None,
+    elasticsearch_mapping=None
+):
     """
     :param elasticsearch_index_alias:  alias for Elasticsearch used in
                                        amundsensearchlibrary/search_service/config.py as an index
@@ -127,28 +121,26 @@ def create_es_publisher_sample_job(elasticsearch_index_alias='table_search_index
                        extractor=Neo4jSearchDataExtractor(),
                        transformer=NoopTransformer())
 
-    # elastic search client instance
-    elasticsearch_client = es
+    elasticsearch_client = Elasticsearch([{'host': ES_HOST}])
+
     # unique name of new index in Elasticsearch
     elasticsearch_new_index_key = 'tables' + str(uuid.uuid4())
 
     job_config = ConfigFactory.from_dict({
-        f'extractor.search_data.extractor.neo4j.{Neo4jExtractor.GRAPH_URL_CONFIG_KEY}': neo4j_endpoint,
+        f'extractor.search_data.extractor.neo4j.{Neo4jExtractor.GRAPH_URL_CONFIG_KEY}': NEO4J_ENDPOINT,
         f'extractor.search_data.extractor.neo4j.{Neo4jExtractor.MODEL_CLASS_CONFIG_KEY}': model_name,
-        f'extractor.search_data.extractor.neo4j.{Neo4jExtractor.NEO4J_AUTH_USER}': neo4j_user,
-        f'extractor.search_data.extractor.neo4j.{Neo4jExtractor.NEO4J_AUTH_PW}': neo4j_password,
+        f'extractor.search_data.extractor.neo4j.{Neo4jExtractor.NEO4J_AUTH_USER}': NEO4J_USER,
+        f'extractor.search_data.extractor.neo4j.{Neo4jExtractor.NEO4J_AUTH_PW}': NEO4j_PASSWORD,
+
         f'loader.filesystem.elasticsearch.{FSElasticsearchJSONLoader.FILE_PATH_CONFIG_KEY}': extracted_search_data_path,
         f'loader.filesystem.elasticsearch.{FSElasticsearchJSONLoader.FILE_MODE_CONFIG_KEY}': 'w',
+
         f'publisher.elasticsearch.{ElasticsearchPublisher.FILE_PATH_CONFIG_KEY}': extracted_search_data_path,
         f'publisher.elasticsearch.{ElasticsearchPublisher.FILE_MODE_CONFIG_KEY}': 'r',
-        f'publisher.elasticsearch.{ElasticsearchPublisher.ELASTICSEARCH_CLIENT_CONFIG_KEY}':
-            elasticsearch_client,
-        f'publisher.elasticsearch.{ElasticsearchPublisher.ELASTICSEARCH_NEW_INDEX_CONFIG_KEY}':
-            elasticsearch_new_index_key,
-        f'publisher.elasticsearch.{ElasticsearchPublisher.ELASTICSEARCH_DOC_TYPE_CONFIG_KEY}':
-            elasticsearch_doc_type_key,
-        f'publisher.elasticsearch.{ElasticsearchPublisher.ELASTICSEARCH_ALIAS_CONFIG_KEY}':
-            elasticsearch_index_alias,
+        f'publisher.elasticsearch.{ElasticsearchPublisher.ELASTICSEARCH_CLIENT_CONFIG_KEY}': elasticsearch_client,
+        f'publisher.elasticsearch.{ElasticsearchPublisher.ELASTICSEARCH_NEW_INDEX_CONFIG_KEY}': elasticsearch_new_index_key,
+        f'publisher.elasticsearch.{ElasticsearchPublisher.ELASTICSEARCH_DOC_TYPE_CONFIG_KEY}': elasticsearch_doc_type_key,
+        f'publisher.elasticsearch.{ElasticsearchPublisher.ELASTICSEARCH_ALIAS_CONFIG_KEY}': elasticsearch_index_alias,
     })
 
     # only optionally add these keys, so need to dynamically `put` them
@@ -159,18 +151,21 @@ def create_es_publisher_sample_job(elasticsearch_index_alias='table_search_index
         job_config.put(f'publisher.elasticsearch.{ElasticsearchPublisher.ELASTICSEARCH_MAPPING_CONFIG_KEY}',
                        elasticsearch_mapping)
 
-    job = DefaultJob(conf=job_config,
-                     task=task,
-                     publisher=ElasticsearchPublisher())
-    return job
+    return DefaultJob(
+        conf=job_config,
+        task=task,
+        publisher=ElasticsearchPublisher()
+    )
 
 
 if __name__ == "__main__":
-    job = create_sample_snowflake_job()
-    job.launch()
+    job_neo = create_sample_snowflake_job()
+    job_neo.launch()
 
-    job_es_table = create_es_publisher_sample_job(
+    job_es = create_es_publisher_sample_job(
         elasticsearch_index_alias='table_search_index',
         elasticsearch_doc_type_key='table',
-        model_name='databuilder.models.table_elasticsearch_document.TableESDocument')
-    job_es_table.launch()
+        model_name='databuilder.models.table_elasticsearch_document.TableESDocument'
+    )
+    job_es.launch()
+    print('done!')
