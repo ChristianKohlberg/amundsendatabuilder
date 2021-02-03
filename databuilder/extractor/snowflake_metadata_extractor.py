@@ -50,7 +50,7 @@ class SnowflakeMetadataExtractor(Extractor):
         {database}.{schema}.TABLES t
             ON c.TABLE_NAME = t.TABLE_NAME
             AND c.TABLE_SCHEMA = t.TABLE_SCHEMA
-    {where_clause_suffix};
+    WHERE c.TABLE_SCHEMA != 'INFORMATION_SCHEMA';
     """
 
     # CONFIG KEYS
