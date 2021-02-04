@@ -46,6 +46,10 @@ pyhocon==0.3.42
 pyparsing==2.2.0
 six>=1.11.0,<2.0.0
 sqlalchemy>=1.3.0,<2.0
+
+snowflake-connector-python==2.3.10
+snowflake-sqlalchemy==1.2.4
+
 wheel==0.31.1
 neo4j-driver==1.7.2
 neotime==1.7.1
