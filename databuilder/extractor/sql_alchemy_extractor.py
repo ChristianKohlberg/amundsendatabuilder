@@ -49,7 +49,11 @@ class SQLAlchemyExtractor(Extractor):
         Create an iterator to execute sql.
         """
         if not hasattr(self, 'results'):
-            self.results = self.connection.execute(self.extract_sql)
+            try:
+                self.results = self.connection.execute(self.extract_sql)
+
+            finally:
+                self.connection.close()
 
         if hasattr(self, 'model_class'):
             results = [self.model_class(**result)
