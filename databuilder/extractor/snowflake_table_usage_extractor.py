@@ -73,7 +73,6 @@ class SnowflakeTableUsageExtractor(Extractor):
                   WHERE query_type = 'SELECT'
                     AND start_time > dateadd(DAY, -90, current_date())
                     AND execution_status = 'SUCCESS'
-                  LIMIT 100
                  ),
 
              tbl_match AS
